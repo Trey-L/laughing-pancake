@@ -4,6 +4,7 @@
  * Google Sheet, sends emails, and handles rescheduling.
  * Uses a combined Time Slot column (HHMM-HHMM) and reads form data via e.namedValues.
  * Version: 2.6 
+ * Made by Trey Leong
  */
 
 // --- Configuration ---
