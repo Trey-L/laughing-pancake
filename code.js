@@ -35,8 +35,8 @@ const TYPE_PV = "Personal Voice";
 const TYPE_ANNOUNCEMENT = "Announcement"; // Example other types
 const TYPE_BLOCKED = "Blocked"; // Example other types
 
-// Assembly Time Rules (Singapore Timezone assumed based on your location)
-const SG_TIMEZONE = Session.getScriptTimeZone(); // Or specify "Asia/Singapore"
+// Assembly Time Rules
+const SG_TIMEZONE = Session.getScriptTimeZone();
 const MONDAY_START_HOUR = 9;
 const MONDAY_START_MINUTE = 5;
 const MONDAY_END_HOUR = 9;
