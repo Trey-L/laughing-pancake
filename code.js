@@ -3,14 +3,19 @@
  * Automates scheduling of Personal Voice slots from a Google Form into a
  * Google Sheet, sends emails, and handles rescheduling.
  * Uses a combined Time Slot column (HHMM-HHMM) and reads form data via e.namedValues.
- * Version: 2.1
- * Made by Trey Leong
+ * Version: 2.6 
  */
 
 // --- Configuration ---
 const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
 const SCHEDULE_SHEET_NAME = "Assembly Schedule"; // Name of the sheet with the schedule
-const ADMIN_EMAIL = "INSERT YOUR OWN EMAIL HERE"; // <--- CHANGE THIS EMAIL
+const ADMIN_EMAIL = "INSERT EMAIL HERE"; // <--- CHANGE THIS EMAIL
+// --- Configuration (Additions for Populate Schedule) ---
+const NUMBER_OF_WEEKS_TO_ADD = 4; // How many weeks forward to populate each time you run it
+const LIGHT_COLOR = '#ffffff'; // White
+const DARK_COLOR = '#bfbdbd';  // Dark Grey 
+
+
 
 // Column indices (A=1, B=2, etc.) - ADJUSTED FOR NEW LAYOUT!
 const COL_DATE = 1;
@@ -35,8 +40,8 @@ const TYPE_PV = "Personal Voice";
 const TYPE_ANNOUNCEMENT = "Announcement"; // Example other types
 const TYPE_BLOCKED = "Blocked"; // Example other types
 
-// Assembly Time Rules
-const SG_TIMEZONE = Session.getScriptTimeZone();
+// Assembly Time Rules (Singapore Timezone assumed based on your location)
+const SG_TIMEZONE = Session.getScriptTimeZone(); // Or specify "Asia/Singapore"
 const MONDAY_START_HOUR = 9;
 const MONDAY_START_MINUTE = 5;
 const MONDAY_END_HOUR = 9;
@@ -46,6 +51,180 @@ const TUE_FRI_START_MINUTE = 5;
 const TUE_FRI_END_HOUR = 8;
 const TUE_FRI_END_MINUTE = 20;
 const SLOT_DURATION = 5; // Minutes per standard row/block
+
+// --- Function to Populate Schedule Manually (with Formatting) ---
+function populateSchedule() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SCHEDULE_SHEET_NAME);
+  if (!sheet) {
+    SpreadsheetApp.getUi().alert(`Error: Sheet "${SCHEDULE_SHEET_NAME}" not found.`);
+    Logger.log(`Error in populateSchedule: Sheet "${SCHEDULE_SHEET_NAME}" not found.`);
+    return;
+  }
+
+  const ui = SpreadsheetApp.getUi();
+  const response = ui.alert(
+    'Populate & Format Schedule', // Updated title
+    `This will add assembly slots for approximately ${NUMBER_OF_WEEKS_TO_ADD} future week(s) (starting after the last date found) AND apply alternating day background colors to the entire schedule.\n\nEnsure Column B ('Time Slot') is formatted as PLAIN TEXT before proceeding.\n\nContinue?`,
+    ui.ButtonSet.YES_NO);
+
+  if (response !== ui.Button.YES) {
+    Logger.log("User cancelled schedule population and formatting.");
+    return;
+  }
+
+  Logger.log(`Starting schedule population for ${NUMBER_OF_WEEKS_TO_ADD} week(s).`);
+
+  // --- PART 1: Populate New Data ---
+  let lastRowBeforeAdding = sheet.getLastRow();
+  let valuesBeforeAdding = sheet.getDataRange().getValues(); // Get current values
+  let lastDate = null;
+
+  // Find the last date already in the sheet
+  if (valuesBeforeAdding.length > 1) {
+     for (let i = valuesBeforeAdding.length - 1; i >= 1; i--) {
+         if (valuesBeforeAdding[i][COL_DATE - 1] instanceof Date) {
+             lastDate = new Date(valuesBeforeAdding[i][COL_DATE - 1]);
+             lastDate.setHours(0, 0, 0, 0);
+             Logger.log(`Last existing date found: ${lastDate.toDateString()}`);
+             break;
+         }
+     }
+  }
+
+  let startDate = new Date();
+  startDate.setHours(0, 0, 0, 0);
+
+  if (lastDate) {
+     startDate = new Date(lastDate);
+     startDate.setDate(startDate.getDate() + 1);
+     Logger.log(`Starting population from: ${startDate.toDateString()}`);
+  } else {
+      Logger.log("No existing dates found or sheet empty. Starting population from today.");
+  }
+
+  const endDateLimit = new Date(startDate);
+  endDateLimit.setDate(endDateLimit.getDate() + NUMBER_OF_WEEKS_TO_ADD * 7);
+
+  let newData = []; // Array to hold new rows
+  let currentDate = new Date(startDate);
+
+  while (currentDate <= endDateLimit) {
+    const dayOfWeek = currentDate.getDay();
+    if (dayOfWeek === 0 || dayOfWeek === 6) {
+      currentDate.setDate(currentDate.getDate() + 1);
+      continue;
+    }
+
+    let startTime = new Date(currentDate);
+    let endTimeLimit = new Date(currentDate);
+
+    if (dayOfWeek === 1) { // Monday
+      startTime.setHours(MONDAY_START_HOUR, MONDAY_START_MINUTE, 0, 0);
+      endTimeLimit.setHours(MONDAY_END_HOUR, MONDAY_END_MINUTE, 0, 0);
+    } else { // Tuesday - Friday
+      startTime.setHours(TUE_FRI_START_HOUR, TUE_FRI_START_MINUTE, 0, 0);
+      endTimeLimit.setHours(TUE_FRI_END_HOUR, TUE_FRI_END_MINUTE, 0, 0);
+    }
+
+    let currentTimeSlotStart = new Date(startTime);
+    while (currentTimeSlotStart < endTimeLimit) {
+      let currentTimeSlotEnd = new Date(currentTimeSlotStart);
+      currentTimeSlotEnd.setMinutes(currentTimeSlotStart.getMinutes() + SLOT_DURATION);
+      const timeSlotString = `${formatTime(currentTimeSlotStart)}-${formatTime(currentTimeSlotEnd)}`;
+      newData.push([new Date(currentDate), timeSlotString, SLOT_DURATION, TYPE_EMPTY]);
+      currentTimeSlotStart.setMinutes(currentTimeSlotStart.getMinutes() + SLOT_DURATION);
+    }
+    currentDate.setDate(currentDate.getDate() + 1);
+  }
+
+  // Add the new rows to the sheet if any were generated
+  if (newData.length > 0) {
+      const startRowForNewData = lastRowBeforeAdding + 1;
+      const numColsToPopulate = 4; // Date, Time Slot, Duration, Activity Type
+      sheet.getRange(startRowForNewData, 1, newData.length, numColsToPopulate).setValues(newData);
+      Logger.log(`Successfully added ${newData.length} new schedule slots.`);
+      SpreadsheetApp.flush(); // Ensure data is written before formatting
+  } else {
+      Logger.log("No new data generated.");
+  }
+
+  // --- PART 2: Apply Alternating Background Colors ---
+  Logger.log("Applying alternating background colors to the schedule...");
+
+  const dataRange = sheet.getDataRange(); // Get range *after* adding new data
+  const values = dataRange.getValues();   // Get values *after* adding new data
+  const numRows = dataRange.getNumRows();
+  const numCols = sheet.getLastColumn(); // Format all columns up to the last one with any data
+
+  let previousDateString = null;
+  let useLightColor = true; // Start with light color
+
+  // Loop through all data rows (skip header row 1, index 0)
+  for (let i = 1; i < numRows; i++) {
+    const currentRow = i + 1; // 1-based row index for getRange
+    const dateValue = values[i][COL_DATE - 1]; // Get date from Column A
+
+    if (dateValue instanceof Date) {
+        const currentDateString = dateValue.toDateString(); // Compare based on date string "Tue Apr 16 2024"
+
+        // Check if the day has changed compared to the previous row
+        if (previousDateString !== null && currentDateString !== previousDateString) {
+            useLightColor = !useLightColor; // Flip the color
+        }
+
+        // Determine the color for the current row
+        const bgColor = useLightColor ? LIGHT_COLOR : DARK_COLOR;
+
+        // Apply the background color to the entire row (up to the last column with data)
+        try {
+            sheet.getRange(currentRow, 1, 1, numCols).setBackground(bgColor);
+        } catch (formatError) {
+            // Log error but continue trying to format other rows
+            Logger.log(`Error setting background for row ${currentRow}: ${formatError}`);
+        }
+
+
+        // Update the previous date string for the next iteration
+        previousDateString = currentDateString;
+
+    } else {
+         // Optional: Handle rows where Column A is not a valid date (e.g., set a default color or skip)
+         // sheet.getRange(currentRow, 1, 1, numCols).setBackground(null); // Clear background if date is invalid? Or just leave it.
+         // Logger.log(`Skipping background format for row ${currentRow} as Column A is not a valid date.`);
+    }
+  }
+
+   SpreadsheetApp.flush(); // Ensure formatting is applied
+
+  // Final confirmation message
+  if (newData.length > 0) {
+      ui.alert(`Success! Added ${newData.length} new schedule slots and updated background colors.`);
+      Logger.log(`Formatting complete.`);
+  } else {
+      ui.alert("No new slots were added, but existing row background colors have been updated.");
+      Logger.log(`Formatting complete (no new rows added).`);
+  }
+} // End of populateSchedule function
+
+
+// --- Helper Function: Format Time for HHMM ---
+function formatTime(dateObj) {
+    const hours = dateObj.getHours().toString().padStart(2, '0');
+    const minutes = dateObj.getMinutes().toString().padStart(2, '0');
+    return hours + minutes;
+}
+
+// --- Function to Add Custom Menu ---
+function onOpen() {
+  SpreadsheetApp.getUi()
+      .createMenu('Assembly Scheduler')
+      .addItem('Populate & Format Schedule', 'populateSchedule') // Updated menu item text
+      .addToUi();
+}
+
+
+
 
 // --- Main Function: Triggered on Form Submission ---
 
@@ -212,6 +391,140 @@ function parseTimeSlot(timeSlotString, baseDate) {
   }
 }
 
+/**
+ * Helper function to find an available slot specifically on a given date.
+ * Very similar to findAndAssignSlot, but restricted to one day.
+ *
+ * @param {object} studentData The data object for the student needing a slot.
+ * @param {Date} targetDate The specific date to search on.
+ * @return {object} Result object: { success: boolean, assignedSlotId?: string, slotInfo?: object }
+ */
+function findSlotOnDate(studentData, targetDate) {
+  if (!(targetDate instanceof Date)) {
+    Logger.log(`findSlotOnDate called with invalid targetDate: ${targetDate}`);
+    return { success: false };
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SCHEDULE_SHEET_NAME);
+  if (!sheet) return { success: false }; // Error logged elsewhere if sheet missing
+
+  const dataRange = sheet.getDataRange();
+  const values = dataRange.getValues();
+  const numRows = dataRange.getNumRows();
+  const blocksNeeded = Math.ceil(studentData.timeRequested / SLOT_DURATION);
+  const targetDateString = targetDate.toDateString(); // For comparison
+
+  Logger.log(`Searching specifically on date ${targetDateString} for ${blocksNeeded} blocks for ${studentData.email}`);
+
+  const assignedSlotId = `PV_${studentData.email}_${new Date().getTime()}_RE`; // Add suffix for reschedule ID
+
+  for (let i = 1; i < numRows; i++) { // Start row 2 (index 1)
+    const rowDateVal = values[i][COL_DATE - 1];
+    const timeSlotString = values[i][COL_TIMESLOT - 1];
+    const activityType = values[i][COL_ACTIVITY_TYPE - 1];
+
+    // Skip if not a date or doesn't match the target date
+    if (!(rowDateVal instanceof Date) || rowDateVal.toDateString() !== targetDateString) {
+      continue;
+    }
+
+    // --- Rest of the logic is almost identical to findAndAssignSlot's loop ---
+    // --- (Validation, time parsing, assembly time check, consecutive empty check) ---
+
+    if (!timeSlotString || activityType === undefined || activityType === null) continue;
+
+    const parsedCurrentTime = parseTimeSlot(timeSlotString, rowDateVal);
+    if (!parsedCurrentTime.start) continue;
+
+    if (!isWithinAssemblyTime(rowDateVal, parsedCurrentTime.start)) continue;
+
+    if (activityType === TYPE_EMPTY) {
+      let consecutiveEmpty = 0;
+      let potentialSlotRows = [];
+      let firstSlotStartTime = null;
+      let lastSlotEndTime = null;
+      let previousSlotEndTime = null;
+
+      for (let j = 0; j < blocksNeeded; j++) {
+        const checkRowIndex = i + j;
+        if (checkRowIndex >= numRows) break;
+
+        const checkActivity = values[checkRowIndex][COL_ACTIVITY_TYPE - 1];
+        const checkDateVal = values[checkRowIndex][COL_DATE - 1];
+        const checkTimeSlotString = values[checkRowIndex][COL_TIMESLOT - 1];
+
+        if (!(checkDateVal instanceof Date) || !checkTimeSlotString || checkActivity === undefined || checkActivity === null) break;
+
+        // Ensure still on the target date
+        if (checkDateVal.toDateString() !== targetDateString) break;
+
+        const parsedCheckTime = parseTimeSlot(checkTimeSlotString, checkDateVal);
+        if (!parsedCheckTime.start) break;
+
+        if (checkActivity === TYPE_EMPTY && isWithinAssemblyTime(checkDateVal, parsedCheckTime.start)) {
+           if (j > 0 && previousSlotEndTime && parsedCheckTime.start.getTime() !== previousSlotEndTime.getTime()) break; // Check consecutiveness
+
+           consecutiveEmpty++;
+           potentialSlotRows.push(checkRowIndex + 1);
+           if (j === 0) firstSlotStartTime = parsedCheckTime.start;
+           lastSlotEndTime = parsedCheckTime.end;
+           previousSlotEndTime = parsedCheckTime.end;
+        } else {
+           break;
+        }
+      }
+
+      // Found suitable block on this specific date!
+      if (consecutiveEmpty >= blocksNeeded) {
+        Logger.log(`Found suitable slot ON TARGET DATE ${targetDateString} starting at row ${i + 1}.`);
+
+        // Update the sheet (same update logic as findAndAssignSlot)
+        for (let k = 0; k < blocksNeeded; k++) {
+            const sheetRowIndex = potentialSlotRows[k];
+            let updateData = [];
+            updateData[COL_ACTIVITY_TYPE - 1] = TYPE_PV;
+            updateData[COL_STUDENT_NAME - 1] = studentData.name;
+            updateData[COL_CLASS - 1] = studentData.class;
+            updateData[COL_PHONE - 1] = studentData.phone;
+            updateData[COL_SUBJECT - 1] = studentData.subject;
+            updateData[COL_SLIDES - 1] = studentData.slides;
+            updateData[COL_EMAIL - 1] = studentData.email;
+            updateData[COL_TIME_REQUESTED - 1] = studentData.timeRequested;
+            updateData[COL_CONFIRMATION_SENT - 1] = "No"; // Rescheduled, needs confirmation
+            updateData[COL_REMINDER_SENT - 1] = "No";
+            updateData[COL_ASSIGNED_SLOT_ID - 1] = assignedSlotId;
+            updateData[COL_FORM_TIMESTAMP - 1] = studentData.formTimestamp; // Keep original timestamp
+
+            let updateValuesRow = [];
+            for(let colIdx = COL_ACTIVITY_TYPE; colIdx <= COL_FORM_TIMESTAMP; colIdx++) {
+                updateValuesRow.push(updateData[colIdx - 1]);
+            }
+            const targetRange = sheet.getRange(sheetRowIndex, COL_ACTIVITY_TYPE, 1, COL_FORM_TIMESTAMP - COL_ACTIVITY_TYPE + 1);
+            targetRange.setValues([updateValuesRow]);
+        }
+        SpreadsheetApp.flush();
+
+        return {
+          success: true,
+          assignedSlotId: assignedSlotId,
+          slotInfo: {
+            date: rowDateVal, // The target date
+            startTime: firstSlotStartTime,
+            endTime: lastSlotEndTime,
+            rows: potentialSlotRows
+          }
+        };
+      }
+      // Advance 'i' if consecutive blocks were checked
+      i += (consecutiveEmpty > 0 ? consecutiveEmpty - 1 : 0);
+    } // End if activityType is Empty
+  } // End FOR loop through rows
+
+  // No suitable slot found on this specific date
+  Logger.log(`No suitable ${blocksNeeded}-block slot found specifically on date ${targetDateString}.`);
+  return { success: false };
+}
 
 // --- Helper Function: Find and Assign Slot ---
 function findAndAssignSlot(studentData) {
@@ -431,9 +744,9 @@ function sendConfirmationEmail(email, name, date, startTime, endTime, subject) {
     <p><strong>Time:</strong> ${formattedStartTime} - ${formattedEndTime}</p>
     <p>Please prepare your sharing and ensure any slides are ready and accessible via the link you provided.</p>
     <p>Further details regarding reporting time will be sent in a reminder email the day before your scheduled slot.</p>
-    <p>Thank you for volunteering!</p>
+    <p>Thank you!</p>
     <br>
-    <p><em>(This is an automated message)</em></p>
+    <p><em>(This is an automated message.)</em></p>
   `;
 
   try {
@@ -464,7 +777,7 @@ function sendReminderEmail(email, name, date, startTime) {
   const dayOfWeek = date.getDay();
 
   let reportingTime = "";
-  let reportingLocation = "the School Hall"; // Or be more specific if needed
+  let reportingLocation = "Hall"; // Or be more specific if needed
 
   if (dayOfWeek === 1) { // Monday
     reportingTime = "8:45 AM"; // e.g., 20 mins before 9:05 AM
@@ -483,7 +796,7 @@ function sendReminderEmail(email, name, date, startTime) {
     <p>Ensure your slides (if any) are accessible via the link you provided earlier.</p>
     <p>We look forward to your sharing!</p>
     <br>
-    <p><em>(This is an automated message)</em></p>
+    <p><em>(This is an automated message, please do not reply to this email.)</em></p>
   `;
 
   try {
@@ -588,10 +901,10 @@ function updateStatus(assignedSlotId, columnToUpdate, status) {
   }
 }
 
-// --- Daily Function: Triggered Daily ---
+// --- Daily Function: Triggered Daily (REVISED v6) ---
 
 function dailyCheck() {
-  Logger.log("Starting dailyCheck function.");
+  Logger.log("Starting dailyCheck function (v6 - Corrected Clearing & Reschedule Debug).");
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SCHEDULE_SHEET_NAME);
    if (!sheet) {
@@ -600,152 +913,226 @@ function dailyCheck() {
     return;
   }
   const dataRange = sheet.getDataRange();
-  // Get values once - use real values for dates/logic, display values for simple string checks like "Yes"
   const displayValues = dataRange.getDisplayValues();
   const realValues = dataRange.getValues();
   const numRows = dataRange.getNumRows();
+  const lastCol = sheet.getLastColumn();
 
   const tomorrow = new Date();
   tomorrow.setDate(tomorrow.getDate() + 1);
   tomorrow.setHours(0, 0, 0, 0);
-  // Use a reliable comparison format - ISO string parts or comparing date objects
-  const tomorrowDateString = tomorrow.toDateString(); // e.g., "Tue Apr 16 2024"
+  const tomorrowDateString = tomorrow.toDateString();
 
-  let processedSlotIdsForReminders = new Set(); // Avoid multiple reminders for multi-block slots
-  let displacedSlots = new Map(); // Store info about slots that need rescheduling <assignedSlotId, studentData>
+  let processedSlotIdsForReminders = new Set(); // Stores {id, status, data}
+  let displacedSlotsData = new Map(); // <assignedSlotId, studentData> - Stores data ONCE
+  let displacedIds = new Set();       // Stores IDs identified as displaced
 
-  // --- Pass 1: Send Reminders and Detect Displaced Slots ---
-  Logger.log("Daily Check - Pass 1: Checking for reminders and displacements.");
+  // --- Pass 1: Detect Reminders and Identify Displaced Booking IDs ---
+  Logger.log("Daily Check - Pass 1: Identifying reminders and displaced booking IDs.");
   for (let i = 1; i < numRows; i++) { // Start row 2 (index 1)
     const assignedSlotId = realValues[i][COL_ASSIGNED_SLOT_ID - 1];
+    if (!assignedSlotId) continue;
+
     const activityType = realValues[i][COL_ACTIVITY_TYPE - 1];
     const dateVal = realValues[i][COL_DATE - 1];
-    const timeSlotString = realValues[i][COL_TIMESLOT - 1]; // Get the time slot string
+    const timeSlotString = realValues[i][COL_TIMESLOT - 1];
 
-    // Skip if essential data is missing for processing this row
-    if (!(dateVal instanceof Date) || !timeSlotString || !activityType) continue;
+    if (!(dateVal instanceof Date) || !timeSlotString || !activityType) {
+        Logger.log(`Row ${i + 1} has AssignedSlotID "${assignedSlotId}" but missing critical data (Date/Time/Activity). Skipping processing for this row.`);
+        continue;
+    }
 
-    // Parse time for logic below - needed for both reminders and displacement original time
     const parsedTime = parseTimeSlot(timeSlotString, dateVal);
     if (!parsedTime.start) {
-         Logger.log(`Skipping row ${i + 1} in daily check due to unparseable time slot: "${timeSlotString}"`);
-         continue; // Cannot process without valid time
-     }
+        Logger.log(`Row ${i + 1} has AssignedSlotID "${assignedSlotId}" but unparseable time slot: "${timeSlotString}". Cannot process for reminder/displacement.`);
+        continue;
+    }
 
     // A. Reminder Check
-    if (activityType === TYPE_PV && assignedSlotId) { // Only check PV slots with an ID
-      const reminderSent = displayValues[i][COL_REMINDER_SENT - 1]; // Use display value for "Yes"/"No" check
+    if (activityType === TYPE_PV) {
+      const reminderSent = displayValues[i][COL_REMINDER_SENT - 1];
       const slotDate = new Date(dateVal);
       slotDate.setHours(0, 0, 0, 0);
-
-      // Compare dates reliably
       if (slotDate.toDateString() === tomorrowDateString && reminderSent !== "Yes" && reminderSent !== "Error") {
-          if (!processedSlotIdsForReminders.has(assignedSlotId)) {
-            const studentEmail = realValues[i][COL_EMAIL - 1];
-            const studentName = realValues[i][COL_STUDENT_NAME - 1];
-
-             Logger.log(`Found slot for reminder: ID ${assignedSlotId}, Email: ${studentEmail}, Date: ${slotDate.toDateString()}`);
-
-            if (studentEmail && studentName) {
-              // Pass the parsed start time to the reminder function
-              const success = sendReminderEmail(studentEmail, studentName, dateVal, parsedTime.start);
-              updateStatus(assignedSlotId, COL_REMINDER_SENT, success ? "Yes" : "Error");
-              processedSlotIdsForReminders.add(assignedSlotId); // Mark as processed
-            } else {
-                 Logger.log(`Skipping reminder for row ${i+1} (ID: ${assignedSlotId}) - missing email or name.`);
-                 updateStatus(assignedSlotId, COL_REMINDER_SENT, "Error"); // Mark as error if data missing
-                 processedSlotIdsForReminders.add(assignedSlotId);
-            }
-          } else {
-              // Logger.log(`Reminder already processed for Slot ID ${assignedSlotId} (Row ${i+1})`);
+          let found = false;
+          processedSlotIdsForReminders.forEach(item => { if (item.id === assignedSlotId) found = true; });
+          if (!found) {
+             const studentEmail = realValues[i][COL_EMAIL - 1];
+             const studentName = realValues[i][COL_STUDENT_NAME - 1];
+             Logger.log(`Queueing reminder for: ID ${assignedSlotId}, Row ${i+1}, Email: ${studentEmail}`);
+             if (studentEmail && studentName) {
+                 processedSlotIdsForReminders.add({id: assignedSlotId, status: null, data: {email: studentEmail, name: studentName, date: dateVal, startTime: parsedTime.start}});
+             } else {
+                 Logger.log(`Cannot queue reminder for ID ${assignedSlotId} - missing email or name.`);
+                 processedSlotIdsForReminders.add({id: assignedSlotId, status: "Error", data: null});
+             }
           }
       }
     }
 
-    // B. Displacement Check
-    // If a row HAS an Assigned Slot ID but its Activity Type is NO LONGER "Personal Voice", it's been displaced.
-    if (assignedSlotId && activityType !== TYPE_PV) {
-       Logger.log(`Detected potential displacement: Row ${i + 1}, Slot ID ${assignedSlotId}, Activity Type is now "${activityType}"`);
-      if (!displacedSlots.has(assignedSlotId)) {
-         // Store the necessary data to reschedule this student later.
-         // We only need one row's worth of data per displaced slot ID.
+    // B. Displacement Identification: If ID exists and Activity is NOT PV
+    if (activityType !== TYPE_PV) {
+       if (!displacedIds.has(assignedSlotId)) {
+           Logger.log(`Detected displacement trigger: Row ${i + 1}, Slot ID ${assignedSlotId}, Activity Type is now "${activityType}"`);
+           displacedIds.add(assignedSlotId);
+       }
+       if (!displacedSlotsData.has(assignedSlotId)) {
          const timeRequested = realValues[i][COL_TIME_REQUESTED - 1];
-         displacedSlots.set(assignedSlotId, {
+         displacedSlotsData.set(assignedSlotId, {
             email: realValues[i][COL_EMAIL - 1],
             name: realValues[i][COL_STUDENT_NAME - 1],
             class: realValues[i][COL_CLASS - 1],
             phone: realValues[i][COL_PHONE - 1],
             subject: realValues[i][COL_SUBJECT - 1],
             slides: realValues[i][COL_SLIDES - 1],
-            // Ensure timeRequested is a valid number, default to SLOT_DURATION
             timeRequested: (typeof timeRequested === 'number' && timeRequested > 0) ? timeRequested : SLOT_DURATION,
             formTimestamp: realValues[i][COL_FORM_TIMESTAMP - 1],
-            originalDate: dateVal, // Store the original date/time for the notification email
-            originalStartTime: parsedTime.start // Store the original parsed start time
+            originalDate: dateVal,
+            originalStartTime: parsedTime.start
          });
-          Logger.log(`Stored displacement data for Slot ID ${assignedSlotId}`);
-      }
-      // Important: Clear the PV-specific data and Assigned Slot ID from the manually changed row
-      // to prevent re-detecting it tomorrow. Clears Activity Type through Form Timestamp.
-      sheet.getRange(i + 1, COL_ACTIVITY_TYPE, 1, COL_FORM_TIMESTAMP - COL_ACTIVITY_TYPE + 1).clearContent();
-      Logger.log(`Cleared PV data from manually changed row ${i + 1} (originally Slot ID ${assignedSlotId})`);
+          Logger.log(`Stored displacement data for Slot ID ${assignedSlotId} from row ${i+1}`);
+       }
     }
+  } // End Pass 1 FOR loop
+
+  // --- Send Reminders (after iterating) ---
+  if (processedSlotIdsForReminders.size > 0) {
+      Logger.log(`Sending reminders for ${processedSlotIdsForReminders.size} unique slot IDs.`);
+      processedSlotIdsForReminders.forEach(item => {
+          if (item.data && !item.status) {
+             const success = sendReminderEmail(item.data.email, item.data.name, item.data.date, item.data.startTime);
+             item.status = success ? "Yes" : "Error";
+          }
+          if (item.status) {
+             updateStatus(item.id, COL_REMINDER_SENT, item.status);
+          }
+      });
+      SpreadsheetApp.flush();
   }
-   SpreadsheetApp.flush(); // Make sure clearing is done before Pass 2
 
-  // --- Pass 2: Process Rescheduling ---
-   Logger.log(`Daily Check - Pass 2: Processing ${displacedSlots.size} displaced slots.`);
-  if (displacedSlots.size > 0) {
-    for (const [assignedSlotId, studentData] of displacedSlots.entries()) {
-        Logger.log(`Attempting to reschedule Slot ID: ${assignedSlotId} for ${studentData.email}`);
 
-        // Check if critical data was captured before attempting reschedule
-        if(!studentData.email || !studentData.name){
-            Logger.log(`Cannot reschedule Slot ID ${assignedSlotId} - missing critical data (email/name) captured from sheet. Notifying admin.`);
+  // --- Clear Displaced Rows (Conditional Revert) ---
+  let rowsToClearMap = new Map(); // <assignedSlotId, array of row indices>
+  if (displacedIds.size > 0) {
+      Logger.log(`Finding all rows associated with ${displacedIds.size} displaced booking ID(s).`);
+      const allValues = sheet.getDataRange().getValues(); // Get current data again
+      const idColumnValues = sheet.getRange(2, COL_ASSIGNED_SLOT_ID, sheet.getLastRow() > 1 ? sheet.getLastRow() - 1 : 1, 1).getValues();
+
+      displacedIds.forEach(idToClear => {
+          let indicesForId = [];
+          for (let k = 0; k < idColumnValues.length; k++) {
+              if (idColumnValues[k][0] && idColumnValues[k][0].toString() === idToClear.toString()) {
+                  indicesForId.push(k + 2); // Store 1-based row index
+              }
+          }
+          if (indicesForId.length > 0) {
+               rowsToClearMap.set(idToClear, indicesForId);
+               Logger.log(`ID ${idToClear} found in rows: ${indicesForId.join(', ')}`);
+          } else {
+              Logger.log(`Warning: Displaced ID ${idToClear} detected but no rows found with this ID during clearing phase.`);
+          }
+      });
+
+      // Now perform the clearing - conditionally reverting Activity Type
+      if (rowsToClearMap.size > 0) {
+          Logger.log(`Clearing data for displaced bookings (preserving non-PV activities).`);
+          rowsToClearMap.forEach((rowIndices, slotId) => {
+              Logger.log(`Processing rows for Slot ID ${slotId}: ${rowIndices.join(', ')}`);
+              rowIndices.forEach(rowIndex => {
+                  try {
+                      // 1. Clear PV-specific columns (Name to Timestamp)
+                      const startClearCol = COL_STUDENT_NAME;
+                      const endClearCol = COL_FORM_TIMESTAMP;
+                      const numColsToClear = endClearCol - startClearCol + 1;
+
+                      if(startClearCol <= endClearCol) {
+                          sheet.getRange(rowIndex, startClearCol, 1, numColsToClear).clearContent();
+                      }
+
+                      // 2. Clear the Assigned Slot ID
+                      sheet.getRange(rowIndex, COL_ASSIGNED_SLOT_ID).clearContent();
+
+                      // 3. **Conditionally set Activity Type back to Empty**
+                      const activityCell = sheet.getRange(rowIndex, COL_ACTIVITY_TYPE);
+                      const currentActivityType = activityCell.getValue();
+                      if (currentActivityType === TYPE_PV) {
+                          activityCell.setValue(TYPE_EMPTY);
+                          Logger.log(`Row ${rowIndex}: Set Activity Type from PV to Empty.`);
+                      } else {
+                          // Leave the non-PV activity type (e.g., "Announcement") as is
+                          Logger.log(`Row ${rowIndex}: Activity Type is "${currentActivityType}", leaving unchanged.`);
+                      }
+
+                  } catch (clearError) {
+                      Logger.log(`Error clearing/resetting row ${rowIndex} for ID ${slotId}: ${clearError}`);
+                  }
+              });
+          });
+          SpreadsheetApp.flush(); // IMPORTANT: Ensure sheet updates before finding new slots
+          Logger.log("Finished clearing displaced data (preserving non-PV activity types).");
+      }
+  } // End Clearing section
+
+
+  // --- Pass 2: Process Rescheduling Attempts ---
+   Logger.log(`Daily Check - Pass 2: Processing ${displacedSlotsData.size} unique displaced bookings.`);
+  if (displacedSlotsData.size > 0) {
+
+    for (const [assignedSlotId, studentData] of displacedSlotsData.entries()) {
+        Logger.log(`Attempting to reschedule original Slot ID: ${assignedSlotId} for ${studentData.email}`);
+
+        if(!studentData.email || !studentData.name || !(studentData.originalDate instanceof Date) || !(studentData.originalStartTime instanceof Date)){
+            Logger.log(`Cannot reschedule Slot ID ${assignedSlotId} - missing critical data captured. Notifying admin.`);
             const originalTimeStr = studentData.originalStartTime ? Utilities.formatDate(studentData.originalStartTime, SG_TIMEZONE, "HH:mm") : 'N/A';
             const originalDateStr = studentData.originalDate ? Utilities.formatDate(studentData.originalDate, SG_TIMEZONE, "yyyy-MM-dd") : 'N/A';
-            MailApp.sendEmail(ADMIN_EMAIL, "PV Script Reschedule Failed", `Failed to reschedule Slot ID ${assignedSlotId}. Original Slot: ${originalDateStr} ${originalTimeStr}. Reason: Missing student name or email in the sheet row when displacement was detected.`);
-            continue; // Skip to the next displaced slot
+            MailApp.sendEmail(ADMIN_EMAIL, "PV Script Reschedule Failed", `Failed to reschedule Slot ID ${assignedSlotId}. Original Slot: ${originalDateStr} ${originalTimeStr}. Reason: Missing critical student or original slot data captured during displacement.`);
+            continue;
         }
 
-        // Reuse the findAndAssignSlot logic
-        const assignmentResult = findAndAssignSlot(studentData);
+        // ** TWO-PASS SEARCH **
+        let assignmentResult = null;
 
+        // Pass 2a: Try finding a slot on the ORIGINAL date first
+        Logger.log(`Reschedule Pass 2a: Searching for ${studentData.timeRequested}min slot on original date (${studentData.originalDate.toDateString()}) for ${studentData.email}`);
+        assignmentResult = findSlotOnDate(studentData, studentData.originalDate);
+
+        // Pass 2b: If no slot found on original date, search entire schedule
+        if (!assignmentResult.success) {
+            Logger.log(`Reschedule Pass 2b: No slot found on original date. Performing full schedule search for ${studentData.email}`);
+            assignmentResult = findAndAssignSlot(studentData);
+        }
+
+        // Process the result
         if (assignmentResult.success) {
-           Logger.log(`Successfully rescheduled Slot ID ${assignedSlotId} (New ID: ${assignmentResult.assignedSlotId}) for ${studentData.email}. Sending notification.`);
-           const newSlotInfo = assignmentResult.slotInfo; // Contains parsed dates/times
-           // Send reschedule notification using original and new slot info
-          const notifySuccess = sendRescheduleEmail(
+           Logger.log(`Reschedule SUCCESS: Found new slot for original ID ${assignedSlotId}. New Assigned ID: ${assignmentResult.assignedSlotId}. Location: ${assignmentResult.slotInfo.date.toDateString()}. Sending notification.`);
+           const newSlotInfo = assignmentResult.slotInfo;
+           const notifySuccess = sendRescheduleEmail(
               studentData.email,
               studentData.name,
-              studentData.originalDate,     // Original Date object
-              studentData.originalStartTime, // Original parsed start time Date object
-              newSlotInfo.date,              // New Date object
-              newSlotInfo.startTime,         // New parsed start time Date object
-              newSlotInfo.endTime,           // New parsed end time Date object
+              studentData.originalDate,
+              studentData.originalStartTime,
+              newSlotInfo.date,
+              newSlotInfo.startTime,
+              newSlotInfo.endTime,
               studentData.subject
           );
-           // Update confirmation status for the *new* assignment ID
            updateStatus(assignmentResult.assignedSlotId, COL_CONFIRMATION_SENT, notifySuccess ? "Yes" : "Error");
             Logger.log(`Reschedule email status updated for new Slot ID ${assignmentResult.assignedSlotId}: ${notifySuccess ? "Yes" : "Error"}`);
-
         } else {
-            // Could not find a new slot automatically
-            Logger.log(`Failed to find a new slot for displaced Slot ID ${assignedSlotId} (${studentData.email}). Notifying student and admin.`);
-             // Format original date/time for the notification
-             const formattedOldDate = Utilities.formatDate(studentData.originalDate, SG_TIMEZONE, "EEEE, MMMM dd, yyyy");
-             const formattedOldStartTime = studentData.originalStartTime ? Utilities.formatDate(studentData.originalStartTime, SG_TIMEZONE, "hh:mm a") : "[Original Time Unknown]";
-             // Notify student and admin about the cancellation
-             MailApp.sendEmail(
+            Logger.log(`Reschedule FAILED: Could not find ANY new slot for original ID ${assignedSlotId} (${studentData.email}). Notifying student and admin.`);
+            const formattedOldDate = Utilities.formatDate(studentData.originalDate, SG_TIMEZONE, "EEEE, MMMM dd, yyyy");
+            const formattedOldStartTime = Utilities.formatDate(studentData.originalStartTime, SG_TIMEZONE, "hh:mm a");
+            MailApp.sendEmail(
                 studentData.email + "," + ADMIN_EMAIL,
-                "Important Update: Your Personal Voice Sharing Slot Cancelled",
+                "Important Update: Your Personal Voice Sharing Slot [Cancelled]",
                 `Hi ${studentData.name || 'Student'},\n\nDue to changes in the Assembly programme, your Personal Voice sharing slot for "${studentData.subject || 'Your Topic'}" (originally scheduled for ${formattedOldDate} starting around ${formattedOldStartTime}) had to be removed.\n\nUnfortunately, the system could not automatically find a replacement slot at this time.\n\nPlease contact the teacher-in-charge to discuss manual rescheduling options if you still wish to present.\n\nWe apologize for the inconvenience.\n\nThank you.`
             );
         }
-    }
+    } // End FOR loop for rescheduling
   } else {
-      Logger.log("Daily Check - Pass 2: No displaced slots detected today.");
+      Logger.log("Daily Check - Pass 2: No displaced bookings needed rescheduling today.");
   }
 
   Logger.log("dailyCheck function finished.");
-}
+} // End dailyCheck function
+
