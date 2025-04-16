@@ -129,7 +129,7 @@ Triggers tell the script when to run automatically.
 
 ## Important Notes
 
-*   **Timezone:** The script uses the Google Sheet's timezone setting (`Session.getScriptTimeZone()`) for date/time comparisons and email formatting. Ensure this is set correctly for your location (Singapore).
+*   **Timezone:** The script uses the Google Sheet's timezone setting (`Session.getScriptTimeZone()`) for date/time comparisons and email formatting. Ensure this is set correctly for your location.
 *   **Sheet Structure:** The script is highly dependent on the exact sheet name (`Assembly Schedule`) and the column order/headers defined above. Changes will break the script unless the `COL_` constants and code logic are updated accordingly.
 *   **Form Questions:** The script relies on the exact text of your form questions matching the keys defined in the `formKeys` object within `onFormSubmit`.
 *   **Initial Data:** Ensure your `Assembly Schedule` sheet has rows representing future available "Empty" slots for the script to find.
