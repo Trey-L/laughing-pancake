@@ -3,7 +3,8 @@
  * Automates scheduling of Personal Voice slots from a Google Form into a
  * Google Sheet, sends emails, and handles rescheduling.
  * Uses a combined Time Slot column (HHMM-HHMM) and reads form data via e.namedValues.
- * Version: 2.1 (incorporating namedValues and SLOT_DURATION fix)
+ * Version: 2.1
+ * Made by Trey Leong
  */
 
 // --- Configuration ---
